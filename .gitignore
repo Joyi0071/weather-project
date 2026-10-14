@@ -1,0 +1,19 @@
+# ===== 密钥类文件：绝对不要提交到代码仓库 =====
+.streamlit/secrets.toml
+key.txt
+
+# ===== Python 缓存 =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ===== 运行期缓存 =====
+.heatmap_cache.json
+
+# ===== 编辑器 / 系统 =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
