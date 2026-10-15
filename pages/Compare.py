@@ -48,16 +48,22 @@ selected_names = st.multiselect(
 )
 
 
+class _CompareFetchFail(Exception):
+    """单个城市获取失败（故意抛异常：st.cache_data 不缓存异常，
+    失败的城市不会被缓存冻结，下次访问自动重试补齐）。"""
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_city_daily(city_name, api_key):
-    """获取单个城市未来3天预报。
+    """获取单个城市未来3天预报，成功返回 daily 列表（缓存30分钟）。
 
     【重要】心知天气免费版不支持一次查询多个地点（location 用 | 会返回
     404 AP010010），所以这里逐个城市请求，再在页面上合并。
 
-    稳定性措施：最多尝试 3 次，被限流时递增等待（2s / 4s），
-    云端网络较慢时也能稳定拿到数据。
-    返回 (数据, 错误信息)。
+    稳定性措施：
+    - 最多尝试 4 次，被限流时递增等待（3s / 6s / 8s）
+    - 失败抛异常而不返回 None：异常不会被 st.cache_data 缓存，
+      因此失败的城市下次刷新会自动重试，不会被冻结 30 分钟
     """
     pinyin = CITY_DICT[city_name]
     url = (
@@ -65,23 +71,21 @@ def get_city_daily(city_name, api_key):
         f"&language=zh-Hans&unit=c&start=0&days=3"
     )
     last_err = "未知错误"
-    for attempt in range(3):
+    for attempt in range(4):
         try:
             resp = requests.get(url, timeout=REQUEST_TIMEOUT)
             data = resp.json()
             if "results" in data:
-                return data["results"][0]["daily"], None
+                return data["results"][0]["daily"]
             # 限流时通常返回 403
-            if resp.status_code == 403:
-                last_err = "limit"
-                time.sleep(2 * (attempt + 1))  # 2s -> 4s 递增等待
-                continue
-            last_err = str(data.get("status", "未知错误"))
-            time.sleep(2)
+            last_err = "limit" if resp.status_code == 403 else str(
+                data.get("status", "未知错误")
+            )
+            time.sleep(min(3 * (attempt + 1), 8))
         except Exception as e:
             last_err = f"网络请求出错：{e}"
-            time.sleep(2)
-    return None, last_err
+            time.sleep(min(3 * (attempt + 1), 8))
+    raise _CompareFetchFail(last_err)
 
 
 if len(selected_names) < 2:
@@ -95,12 +99,11 @@ else:
 
     with st.spinner("正在逐个获取城市数据..."):
         for name in selected_names:
-            daily, err = get_city_daily(name, API_KEY)
-            if daily:
-                compare_data[name] = daily
-            else:
+            try:
+                compare_data[name] = get_city_daily(name, API_KEY)
+            except _CompareFetchFail as e:
                 failed.append(name)
-                if err == "limit":
+                if str(e) == "limit":
                     limited = True
             # 免费版限额低，逐个请求之间稍作间隔，避免被限流
             time.sleep(0.5)
