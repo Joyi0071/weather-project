@@ -56,7 +56,13 @@ def pie_chart(labels, values, height=400):
 
 
 # ================= 单系列柱状图 =================
-def simple_bar(x, values, height=350, x_label="", y_label="", label="数值"):
-    """单系列柱状图，用于「各城市气温对比」。"""
+def simple_bar(x, values, height=350, x_label="", y_label="", label="数值", horizontal=False):
+    """单系列柱状图，用于「各城市气温对比」。
+
+    horizontal=True 时画横向条形图（城市较多时更易读）。
+    """
     df = pd.DataFrame({label: values}, index=x)
-    st.bar_chart(df, height=height, x_label=x_label, y_label=y_label)
+    if horizontal:
+        st.bar_chart(df, height=height, horizontal=True, x_label=x_label, y_label=y_label)
+    else:
+        st.bar_chart(df, height=height, x_label=x_label, y_label=y_label)
