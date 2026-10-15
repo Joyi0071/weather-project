@@ -54,6 +54,9 @@ def get_city_daily(city_name, api_key):
 
     【重要】心知天气免费版不支持一次查询多个地点（location 用 | 会返回
     404 AP010010），所以这里逐个城市请求，再在页面上合并。
+
+    稳定性措施：最多尝试 3 次，被限流时递增等待（2s / 4s），
+    云端网络较慢时也能稳定拿到数据。
     返回 (数据, 错误信息)。
     """
     pinyin = CITY_DICT[city_name]
@@ -61,17 +64,24 @@ def get_city_daily(city_name, api_key):
         f"{API_BASE}/daily.json?key={api_key}&location={pinyin}"
         f"&language=zh-Hans&unit=c&start=0&days=3"
     )
-    try:
-        resp = requests.get(url, timeout=REQUEST_TIMEOUT)
-        data = resp.json()
-        if "results" in data:
-            return data["results"][0]["daily"], None
-        # 限流时通常返回 403
-        if resp.status_code == 403:
-            return None, "limit"
-        return None, str(data.get("status", "未知错误"))
-    except Exception as e:
-        return None, f"网络请求出错：{e}"
+    last_err = "未知错误"
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, timeout=REQUEST_TIMEOUT)
+            data = resp.json()
+            if "results" in data:
+                return data["results"][0]["daily"], None
+            # 限流时通常返回 403
+            if resp.status_code == 403:
+                last_err = "limit"
+                time.sleep(2 * (attempt + 1))  # 2s -> 4s 递增等待
+                continue
+            last_err = str(data.get("status", "未知错误"))
+            time.sleep(2)
+        except Exception as e:
+            last_err = f"网络请求出错：{e}"
+            time.sleep(2)
+    return None, last_err
 
 
 if len(selected_names) < 2:

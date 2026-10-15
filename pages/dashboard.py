@@ -1,9 +1,9 @@
 import sys
 import os
+import time
 
 import requests
 import streamlit as st
-import requests
 
 # 让 pages 目录下的页面能 import 到项目根目录的 core / charts 模块
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -48,6 +48,10 @@ def fetch_cities_now(names, api_key):
 
     抽成单次循环 + 缓存，避免原来两段代码重复请求同一批城市，
     既浪费额度又容易触发限流。
+
+    稳定性措施（云端网络较慢，比本地更容易被限流）：
+    - 每个城市最多尝试 3 次，被限流时递增等待（2s / 4s）
+    - 请求之间固定间隔 0.6 秒，避免瞬间打满每秒请求限额
     """
     result = {}
     errors = []
@@ -59,19 +63,29 @@ def fetch_cities_now(names, api_key):
             f"{API_BASE}/now.json?key={api_key}&location={pinyin}"
             f"&language=zh-Hans&unit=c"
         )
-        try:
-            res = requests.get(url, timeout=REQUEST_TIMEOUT).json()
-            if "results" in res:
-                now = res["results"][0]["now"]
-                result[name] = {
-                    "temperature": now.get("temperature"),
-                    "text": now.get("text", "未知"),
-                    "wind_scale": now.get("wind_scale", "--"),
-                }
-            else:
-                errors.append(res.get("status", "未知错误"))
-        except Exception as e:
-            errors.append(str(e))
+        got = False
+        for attempt in range(3):
+            try:
+                resp = requests.get(url, timeout=REQUEST_TIMEOUT)
+                res = resp.json()
+                if "results" in res:
+                    now = res["results"][0]["now"]
+                    result[name] = {
+                        "temperature": now.get("temperature"),
+                        "text": now.get("text", "未知"),
+                        "wind_scale": now.get("wind_scale", "--"),
+                    }
+                    got = True
+                    break
+                # 心知免费版限流常见返回：403 或 status 字段带错误
+                if resp.status_code == 403 or "status" in res:
+                    time.sleep(2 * (attempt + 1))  # 2s -> 4s 递增等待
+            except Exception as e:
+                errors.append(str(e))
+                time.sleep(2)
+        if not got and len(errors) < 5:
+            errors.append(f"{name} 获取失败")
+        time.sleep(0.6)  # 请求间隔，防限流
     return result, errors
 
 
