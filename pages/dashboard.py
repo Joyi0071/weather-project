@@ -1,6 +1,8 @@
+import hashlib
 import sys
 import os
 import time
+from datetime import date
 
 import pandas as pd
 import requests
@@ -8,7 +10,15 @@ import streamlit as st
 
 # 让 pages 目录下的页面能 import 到项目根目录的 core / charts 模块
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core.config import API_KEY, CITY_DICT, FOCUS_CITIES, API_BASE, REQUEST_TIMEOUT, ensure_api_key
+from core.config import (
+    API_KEY,
+    CITY_DICT,
+    FOCUS_CITIES,
+    MUST_REAL_CITIES,
+    API_BASE,
+    REQUEST_TIMEOUT,
+    ensure_api_key,
+)
 from core.theme import apply_theme
 from core.auth import require_login, logout_button
 from charts import simple_bar, pie_chart
@@ -42,74 +52,108 @@ logout_button()  # 侧边栏底部「退出登录」
 st.title("📊 全国气象数据可视化大屏")
 
 
-# ================= 数据获取（按城市单独缓存，失败自动补查） =================
+# ================= 数据获取（真实数据优先，失败用模拟数据兜底） =================
 class _CityFetchFail(Exception):
     """单个城市获取失败（故意抛异常：st.cache_data 不缓存异常，
     这样失败的城市下次访问会自动重新查询，直到补齐）。"""
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _fetch_one_city(name, pinyin, api_key):
+def _fetch_one_city(name, pinyin, api_key, retries):
     """查询单个城市实况。成功结果缓存 30 分钟；失败抛异常（不缓存，下次自动重试）。
 
-    根源修复：以前是 5 个城市"打包缓存"，1 个失败整个失败结果被冻结 30 分钟，
-    期间刷新也不会补查失败的城市。现在按城市单独记账：
-    - 成功的城市 30 分钟内不再请求（省额度）
-    - 失败的城市不进缓存，下次访问自动重试补齐
+    - 普通城市重试 2 次，重点城市（无锡）重试 4 次
+    - 收到 403 等非 200 响应时直接判失败（多为免费版限流，重试无意义，避免卡住页面）
     """
     url = (
         f"{API_BASE}/now.json?key={api_key}&location={pinyin}"
         f"&language=zh-Hans&unit=c"
     )
     last_err = ""
-    for attempt in range(4):
+    for attempt in range(retries):
         try:
             resp = requests.get(url, timeout=REQUEST_TIMEOUT)
-            res = resp.json()
-            if "results" in res:
-                now = res["results"][0]["now"]
-                return {
-                    "temperature": now.get("temperature"),
-                    "text": now.get("text", "未知"),
-                }
-            # 心知免费版限流常见返回：403 或 status 字段带错误
-            time.sleep(min(3 * (attempt + 1), 8))  # 3s -> 6s -> 8s 递增等待
+            if resp.status_code == 200:
+                res = resp.json()
+                if "results" in res:
+                    now = res["results"][0]["now"]
+                    return {
+                        "temperature": now.get("temperature"),
+                        "text": now.get("text", "未知"),
+                        "mock": False,
+                    }
+                last_err = res.get("status", "返回异常")
+                break  # 接口正常返回但无数据，重试意义不大
+            else:
+                last_err = f"HTTP {resp.status_code}"
+                break  # 限流/鉴权问题，立即失败转兜底，不拖慢页面
         except Exception as e:
             last_err = str(e)
-            time.sleep(min(3 * (attempt + 1), 8))
+            time.sleep(1.5)
     raise _CityFetchFail(f"{name}: {last_err or '重试后仍失败'}")
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def _mock_city(name, today_str):
+    """模拟数据兜底：按「城市 + 日期」生成确定性的演示天气（同一天数值固定不乱跳）。
+
+    缓存 10 分钟，10 分钟后会自动重新尝试真实接口，成功即用真实数据替换模拟值。
+    气温按月份基准 + 伪随机抖动，天气现象从常见类型中按伪随机选取。
+    """
+    seed = int(hashlib.md5(f"{name}-{today_str}".encode("utf-8")).hexdigest(), 16)
+    month_base = [4, 6, 11, 17, 22, 26, 30, 29, 25, 19, 12, 6]
+    temp = month_base[int(today_str[5:7]) - 1] + (seed % 9) - 4
+    text = ["晴", "多云", "阴", "小雨", "多云", "晴", "阴", "雷阵雨", "小雨", "中雨"][
+        seed % 10
+    ]
+    return {"temperature": str(temp), "text": text, "mock": True}
+
+
 def fetch_cities_now(names, api_key):
-    """逐个城市获取实况（带各自缓存），返回 ({城市名: 数据}, [失败城市名])。"""
+    """逐个城市获取实况（带各自缓存）。
+
+    返回 ({城市名: 数据}, [必须真实但失败的城市名])。
+    - 普通城市失败 → 自动用模拟数据兜底，保证大屏永远有完整数据
+    - 无锡等 MUST_REAL_CITIES 失败 → 不兜底，记录下来在页面明确提示
+    """
     result = {}
-    errors = []
+    must_real_errors = []
+    today_str = date.today().isoformat()
     for name in names:
         pinyin = CITY_DICT.get(name)
         if not pinyin:
             continue
+        retries = 4 if name in MUST_REAL_CITIES else 2
         try:
-            result[name] = _fetch_one_city(name, pinyin, api_key)
+            result[name] = _fetch_one_city(name, pinyin, api_key, retries)
         except _CityFetchFail:
-            errors.append(name)
-        time.sleep(0.5)  # 请求间隔，防限流
-    return result, errors
+            if name in MUST_REAL_CITIES:
+                must_real_errors.append(name)  # 保证真实：失败不造假
+            else:
+                result[name] = _mock_city(name, today_str)
+        time.sleep(0.4)  # 请求间隔，防限流
+    return result, must_real_errors
 
 
-with st.spinner(f"正在获取全国 {len(FOCUS_CITIES)} 个主要城市的气象数据（首次约需 20 秒，之后 30 分钟内秒开）..."):
+mock_count_total = len(FOCUS_CITIES) - len(MUST_REAL_CITIES)
+with st.spinner(
+    f"正在获取全国 {len(FOCUS_CITIES)} 个城市的气象数据"
+    f"（真实数据优先，首次约需 30~60 秒，之后 30 分钟内秒开）..."
+):
     now_map, fetch_errors = fetch_cities_now(FOCUS_CITIES, API_KEY)
 
-if fetch_errors and not now_map:
-    st.error(
-        "获取数据失败，请检查 API Key 是否有效，或是否已超出调用频率限制"
-        "（心知天气免费版限额较低，稍等几分钟后重试）。"
-    )
-    st.stop()
+mock_names = [n for n, v in now_map.items() if v.get("mock")]
 
 if fetch_errors:
-    st.warning(
-        f"⚠️ 以下城市本次获取失败已跳过：{'、'.join(fetch_errors)}。"
-        f"**刷新页面会自动重试补齐**，全部成功后 30 分钟内不再重复请求。"
+    st.error(
+        f"⚠️ {'、'.join(fetch_errors)} 实况获取失败（该城市保证使用真实数据，不用模拟值代替）。"
+        f"**刷新页面会自动重试**，通常是免费接口暂时限流，稍等片刻即可恢复。"
+    )
+
+if mock_names:
+    st.caption(
+        f"ℹ️ 本次有 {len(mock_names)}/{len(FOCUS_CITIES)} 个城市为模拟演示数据（明细表已标注），"
+        f"其余均为心知天气真实数据；系统每 10 分钟自动重试，取到真实数据后会自动替换。"
     )
 
 # ================= 顶部：4个统计卡片（基于真实数据） =================
@@ -139,12 +183,6 @@ with col4:
     else:
         st.metric(label="🔥 最热 / ❄️ 最冷", value="--")
 
-if fetch_errors:
-    st.caption(
-        f"⚠️ 有 {len(fetch_errors)} 个城市本次未取到（{'、'.join(fetch_errors)}），"
-        f"刷新页面会自动重试补齐。"
-    )
-
 st.markdown("---")
 
 # ================= 中间：气温排行（横向，城市较多时更易读） =================
@@ -156,7 +194,7 @@ if now_map:
         key=lambda x: x[1],
         reverse=True,
     )
-    st.subheader(f"📈 全国主要城市实时气温排行（共 {len(ranked)} 城）")
+    st.subheader("📈 全国主要城市实时气温排行")
     simple_bar(
         [n for n, _ in ranked],
         [t for _, t in ranked],
@@ -198,6 +236,7 @@ with right_col:
                 "气温(℃)": int(now_map[n]["temperature"])
                 if str(now_map[n]["temperature"]).lstrip("-").isdigit()
                 else "--",
+                "数据来源": "模拟演示" if now_map[n].get("mock") else "心知天气",
             }
             for n, _ in ranked
         ]
@@ -211,4 +250,7 @@ with right_col:
         st.info("暂无城市明细数据。")
 
 st.markdown("---")
-st.caption("数据来源：心知天气")
+st.caption(
+    "数据来源：心知天气（标注「模拟演示」的城市为程序生成的演示数据，"
+    "用于接口限流时的展示兜底；无锡始终使用真实数据）"
+)
