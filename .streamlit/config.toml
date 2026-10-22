@@ -1,0 +1,15 @@
+# Streamlit 运行配置（可安全提交到代码仓库，不含任何密钥）
+[theme]
+base = "light"
+primaryColor = "#7fb8d9"
+backgroundColor = "#fdfcf8"
+secondaryBackgroundColor = "#eaf4fa"
+textColor = "#3f5560"
+
+[server]
+headless = true
+enableCORS = false
+enableXsrfProtection = false
+
+[browser]
+gatherUsageStats = false
