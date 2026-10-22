@@ -45,17 +45,20 @@ city_pinyin = CITY_DICT[city_name]
 
 @st.cache_data(ttl=3600)
 def get_life_index(city_pinyin, api_key):
+    """返回 (生活指数, 错误说明)。失败时错误说明会显示在页面上，方便排查。"""
     url = (
         f"https://api.seniverse.com/v3/life/suggestion.json"
         f"?key={api_key}&location={city_pinyin}&language=zh-Hans"
     )
     try:
-        data = requests.get(url, timeout=REQUEST_TIMEOUT).json()
+        resp = requests.get(url, timeout=REQUEST_TIMEOUT)
+        data = resp.json()
         if "results" in data:
-            return data["results"][0]["suggestion"]
-        return None
-    except Exception:
-        return None
+            return data["results"][0]["suggestion"], ""
+        # 接口正常响应但拒绝请求：把心知天气返回的原始错误带出来
+        return None, f"HTTP {resp.status_code} ｜ 接口返回：{str(data)[:300]}"
+    except Exception as e:
+        return None, f"请求异常：{type(e).__name__}: {str(e)[:300]}"
 
 
 @st.cache_data(ttl=1800)
@@ -72,8 +75,10 @@ def get_today_weather(city_pinyin, api_key):
             now = data["results"][0]["now"]
             result["temp_now"] = int(now["temperature"])
             result["text_now"] = now.get("text", "")
-    except Exception:
-        pass
+        else:
+            result.setdefault("_err", f"实况接口返回：{str(data)[:200]}")
+    except Exception as e:
+        result.setdefault("_err", f"实况接口异常：{type(e).__name__}: {str(e)[:200]}")
     try:
         url = (
             f"https://api.seniverse.com/v3/weather/daily.json"
@@ -86,8 +91,10 @@ def get_today_weather(city_pinyin, api_key):
             result["low"] = int(daily["low"])
             result["text_day"] = daily.get("text_day", "")
             result["wind_scale"] = daily.get("wind_scale", "")
-    except Exception:
-        pass
+        else:
+            result.setdefault("_err", f"预报接口返回：{str(data)[:200]}")
+    except Exception as e:
+        result.setdefault("_err", f"预报接口异常：{type(e).__name__}: {str(e)[:200]}")
     return result
 
 
@@ -159,7 +166,7 @@ def clothing_advice(weather):
 
 
 with st.spinner("正在获取生活指数..."):
-    life_data = get_life_index(city_pinyin, API_KEY)
+    life_data, life_err = get_life_index(city_pinyin, API_KEY)
 
 # ---------- 今日穿搭推荐 ----------
 with st.spinner("正在生成穿搭建议..."):
@@ -225,3 +232,18 @@ if life_data:
     st.caption("数据来源：心知天气")
 else:
     st.warning("生活指数获取失败，请检查私钥或网络。")
+    # ---------- 诊断信息（排查云端问题用，正常时不显示） ----------
+    with st.expander("🔧 技术细节（排查用）"):
+        st.write("**当前密钥**：前缀 `" + (API_KEY[:2] or "空") + "…`，长度 "
+                 + str(len(API_KEY)) + "（私钥应以 S 开头）")
+        st.write("**生活指数接口报错**：" + (life_err or "无"))
+        st.write("**实况/预报接口报错**：" + (today.get("_err") or "无（接口正常）"))
+        st.write("**运行环境**：云端服务器所在的网络可能无法访问 api.seniverse.com")
+        st.code(
+            "诊断提示：\n"
+            "- 前缀为 P → 填的是「公钥」，服务器调用必须用 S 开头的私钥\n"
+            "- 前缀为 S 但报「请求异常 Timeout/ConnectionError」→ 云端到心知天气网络不通 "
+            "（Streamlit Cloud 服务器在海外），本地正常不代表云端正常\n"
+            "- 返回 JSON 里有 status 字段 → 照 status 的原文对照心知天气文档",
+            language="text",
+        )
