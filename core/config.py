@@ -91,32 +91,63 @@ def ensure_api_key():
 
 # ================= 城市字典（唯一数据源） =================
 # 键为中文城市名，值为心知天气的城市拼音/ID
+# 覆盖：直辖市 + 全部省会 + 主要经济强市，共 42 城
 CITY_DICT = {
+    # ---- 直辖市 / 一线城市 ----
     "北京": "beijing",
     "上海": "shanghai",
     "广州": "guangzhou",
     "深圳": "shenzhen",
+    "天津": "tianjin",
+    "重庆": "chongqing",
+    # ---- 江苏省（含重点关注城市：无锡，大屏保证无锡为真实数据） ----
     "南京": "nanjing",
     "无锡": "wuxi",
     "苏州": "suzhou",
+    "常州": "changzhou",
+    # ---- 华东 ----
     "杭州": "hangzhou",
-    "成都": "chengdu",
-    "重庆": "chongqing",
+    "宁波": "ningbo",
+    "温州": "wenzhou",
+    "合肥": "hefei",
+    "福州": "fuzhou",
+    "厦门": "xiamen",
+    "南昌": "nanchang",
+    "济南": "jinan",
+    "青岛": "qingdao",
+    # ---- 华南 / 华中 ----
+    "东莞": "dongguan",
+    "佛山": "foshan",
     "武汉": "wuhan",
-    "西安": "xian",
-    "天津": "tianjin",
     "长沙": "changsha",
     "郑州": "zhengzhou",
-    "青岛": "qingdao",
-    "厦门": "xiamen",
-    "昆明": "kunming",
-    "哈尔滨": "haerbin",
+    "南宁": "nanning",
+    "海口": "haikou",
+    # ---- 华北 / 东北 ----
+    "石家庄": "shijiazhuang",
+    "太原": "taiyuan",
+    "呼和浩特": "huhehaote",
     "沈阳": "shenyang",
+    "大连": "dalian",
+    "长春": "changchun",
+    "哈尔滨": "haerbin",
+    # ---- 西南 / 西北 ----
+    "成都": "chengdu",
+    "贵阳": "guiyang",
+    "昆明": "kunming",
+    "拉萨": "lasa",
+    "西安": "xian",
+    "兰州": "lanzhou",
+    "西宁": "xining",
+    "银川": "yinchuan",
+    "乌鲁木齐": "wulumuqi",
 }
 
-# 大屏 / 对比默认关注的城市
-# 数据大屏聚焦四个一线城市（北京、上海、广州、深圳）
-FOCUS_CITIES = ["北京", "上海", "广州", "深圳"]
+# 大屏 / 对比默认关注的城市（全部城市上大屏）
+FOCUS_CITIES = list(CITY_DICT.keys())
+
+# 必须使用真实数据的城市（不允许用模拟数据兜底，失败时页面会明确提示）
+MUST_REAL_CITIES = {"无锡"}
 
 # ================= 其他常量 =================
 API_BASE = "https://api.seniverse.com/v3/weather"
